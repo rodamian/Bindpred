@@ -13,3 +13,9 @@ temp_feat <- temp_feat %>% group_by(clonotype_id) %>%
 
 ggplot(temp_feat, aes(x=deg_ratio, y=umis_HC)) + geom_point() + geom_smooth()
 ggplot(temp_feat, aes(x=deg_ratio, y=umis_LC)) + geom_point() + geom_smooth()
+
+
+ggplot(temp_feat, aes(x=ELISA_bind, y=mutation_count)) + geom_col()
+
+
+temp_feat <- feature_matrix

@@ -20,7 +20,7 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
 
   require(tidyverse)
   require(Rsamtools)
-  require(RcppSimdJson)
+  # require(RcppSimdJson)
   require(Seurat)
   require(seqinr)
   require(Biostrings)
@@ -38,7 +38,7 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
   contig.list <- lapply(paste0(VDJ.directory, "/filtered_contig_annotations.csv"), read.csv, stringsAsFactors=F, sep=",", header=T)
   fasta.list <- lapply(paste0(VDJ.directory, "/filtered_contig.fasta"), read.fasta, as.string=T, seqonly=F, forceDNAtolower=F)
   reference.list <- lapply(paste0(VDJ.directory, "/concat_ref.fasta"), read.fasta, as.string=T, seqonly=F, forceDNAtolower=F)
-  annotations.list <- lapply(paste0(VDJ.directory, "/all_contig_annotations.json"), fload)
+  # annotations.list <- lapply(paste0(VDJ.directory, "/all_contig_annotations.json"), fload)
   clonotype.list <- lapply(paste0(VDJ.directory, "/clonotypes.csv"), read.table, stringsAsFactors = F, sep=",", header=T)
 
   # Filter out clones that do not contain exactly one heavy/beta and one light/alpha chain
@@ -54,9 +54,11 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
   contig.list <- map(contig.list, ~filter(., case_when(filter.is.cell ~ is_cell == "True"),
                                              case_when(filter.confidence ~ high_confidence == "True"),
                                              case_when(filter.prod ~productive == "True")) %>%
-                                             rename("raw_clonotype_id" = "clonotype_id"))
+                                             rename("raw_clonotype_id" = "clonotype_id") %>%
+                                             select(-c(is_cell, full_length, productive, reads, high_confidence)))
 
   # Adding gene expression information
+  print("Processing gene expression information")
   GEX.list <- map_if(VDJ.directory, ~dir.exists(paste0(., "/GEX")), ~Read10X(paste0(., "/GEX")) %>% CreateSeuratObject)
 
   antibody_gene_names <- c("IGHA", "IGHG", "IGHM", "IGHD", "IGHE", "IGHJ", "IGK", "IGHV", "JCHAIN", "IGL", "TRAV", "TRAC", "TRBC",
@@ -66,7 +68,7 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
   GEX.list <- lapply(GEX.list, function(x) x$barcode <- {as.character(gsub(colnames(x), pattern = "-1", replacement = "")); return(x)})
   GEX.list <- lapply(GEX.list, function(x) {if (typeof(x) == "S4") x$percent.mt <- PercentageFeatureSet(x, pattern="^mt-"); return(x)})
   GEX.list <- lapply(GEX.list, function(x) {if (typeof(x) == "S4")
-    RunPCA(ScaleData(FindVariableFeatures(NormalizeData(subset(x, percent.mt < 20 & nFeature_RNA > 100 & nFeature_RNA < 2500)))), npcs = 20, ndims.print = 1)})
+    RunPCA(ScaleData(FindVariableFeatures(NormalizeData(subset(x, percent.mt < 20 & nFeature_RNA > 100 & nFeature_RNA < 2500)))), npcs = 20, ndims.print = 1:4, nfeatures.print = 10)})
 
   pca_data <- lapply(GEX.list, function(x) {if (typeof(x) == "S4")
     rownames_to_column(as.data.frame(x@reductions$pca@cell.embeddings), var = "barcode")})
@@ -77,8 +79,7 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
   if (clonotype.level == TRUE) {
 
     contig.list <- map(contig.list, ~group_by(., clonotype_id) %>%
-                         mutate(barcodes = gsub(toString(unique(barcode)), pattern = ", ", replacement = ";")) %>%
-                         select(-c(is_cell, full_length, productive, reads, high_confidence)))
+                         mutate(barcodes = gsub(toString(unique(barcode)), pattern = ", ", replacement = ";")))
 
     if (!missing(clone.strategy)) {clonotype.list <- VDJ_clonotype(clonotype.list, clone.strategy)}
 
@@ -104,12 +105,12 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
     # Fusing HC and LC contigs from same cell in one row
     vdj.per.cell <- map(contig.list,
       ~left_join(filter(., chain %in% "IGH"),
-        filter(select(., barcode, cdr3, cdr3_nt, chain, contig_id), chain %in% c("IGK", "IGL")), by = "barcode", suffix = c("_HC", "_LC")))
+        filter(select(., barcode, cdr3, cdr3_nt, chain, contig_id, umis, ends_with("gene")), chain %in% c("IGK", "IGL")), by = "barcode", suffix = c("_HC", "_LC")))
 
     # Pasted CDR3
-    vdj.per.cell <- map(vdj.per.cell, ~unite(., cdr3_HC, "chain_HC", "cdr3_HC", sep = ":", remove = T) %>%
-                                       unite(., cdr3_LC, "chain_LC", "cdr3_LC", sep = ":", remove = T) %>%
-                                       unite(., cdr3s_aa, "cdr3_HC", "cdr3_LC", sep = ";", remove = T))
+    vdj.per.cell <- map(vdj.per.cell, ~unite(., cdr3_HC, "chain_HC", "cdr3_HC", sep = ":") %>%
+                                       unite(., cdr3_LC, "chain_LC", "cdr3_LC", sep = ":") %>%
+                                       unite(., cdr3s_aa, "cdr3_HC", "cdr3_LC", sep = ";", remove = F))
 
     # Adding cigar string for position of mutations and counting number of mutations
     print("Processing somatic hypermutation data")
@@ -121,7 +122,7 @@ load_data <- function(VDJ.directory, clonotype.level, clone.strategy, filter.pro
     vdj.per.cell <- map2(vdj.per.cell, shm, ~if (is.data.frame(.y)) left_join(.x, .y, by = c("contig_id_LC" = "contig_id"), suffix=c("", "_LC")) else .x)
     vdj.per.cell <- mapply(cbind, vdj.per.cell, "mouse_number" = mouse_number, SIMPLIFY = F)
 
-    # # Reference and barcodes
+    # # References
     # print("Processing reference sequence and barcodes")
     # reference.list <- map(reference.list, ~plyr::ldply(.) %>% rename(".id" = "clonotype_id", "V1" = "reference"))
     # vdj.per.cell <- map2(vdj.per.cell, reference.list,
@@ -141,7 +142,6 @@ label_data <- function(features, labels, share.specific, share.affinity) {
   if (missing(share.affinity)) {share.affinity <-  FALSE}
 
   mouse_number <- map(features, ~unique(.$mouse))
-
   labels <- read.csv(labels) %>% filter(mouse %in% mouse_number)
 
   if (share.specific == TRUE) {
