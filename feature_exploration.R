@@ -1,83 +1,110 @@
 #' Plots repertoire features for binding versus non binding cells. This can be done both at the clonotype level or at the single cell level.
 #' @param features List of dataframes containing the extracted features. This is the output of load_data function.
-#' @param clono.level Logical indicating if the classified sequences are at the single cell level or at the clonotype level. Default is set to FALSE
+#' @param per.sample Logical indicating if the plots produced are separated by sample or aggregated.
 #' @return This function plots the mean mutation for each cell (divided in Heavy chain and Light chain mutations), gene usage, CDR3 length, and the ratio between coding versus non-coding mutations.
 #' @export
 #' @examples
 #' \dontrun{
-#' check_explore_features <- explore_features(features = output.load_data, clono.level = FALSE)
+#' check_explore_features <- explore_features(features = output.load_data)
 #' }
 #'
 
-explore_features <- function(features, clono.level) {
+explore_features <- function(features, per.sample) {
 
   require(ggplot2); theme_set(theme_bw())
   require(tidyverse)
+  update_geom_defaults("smooth", list(alpha = 0.25))
 
-  features <- bind_rows(features) %>% rename("mouse_number" = "mouse") %>%
-    filter(ELISA_bind %in% c("yes", "no")) %>% select(which(colMeans(is.na(.)) < 0.5))
+  f_temp <- bind_rows(features) %>% filter(ELISA_bind %in% c("yes", "no"))
 
-  # Mutations data ----------------------------------------------------------
+  if (missing(per.sample)) per.sample <- T
+  if (per.sample) f_temp <- f_temp %>% group_by(sample)
 
-  # Calculation mutation mean for each group
-  mut_matrix <- features %>% filter(!is.na(ELISA_bind)) %>%
-   filter(ELISA_bind %in% c("yes", "no")) %>%
-    select(mouse, ELISA_bind, mutation_count, mutation_count_LC) %>%
-      group_by(ELISA_bind, mouse) %>%
-        mutate(mean_HC = mean(mutation_count, na.rm=T)) %>%
-          mutate(mean_LC = mean(mutation_count_LC, na.rm=T))
+  output.plot <- list()
 
-  # Plots histogram of mutations for each mouse separately (HC)
-  ggplot(mut_matrix, aes(x=mutation_count, fill=ELISA_bind)) +
-    geom_histogram(binwidth=.5, alpha=.5, position="identity", stat="count") +
-      geom_vline(aes(xintercept=mean_HC,  colour=ELISA_bind),
-                 linetype="dashed", size=1) + facet_wrap(~mouse)
+  if ("barcode" %in% colnames(f_temp)) {
 
-  # Plots histogram of mutations for each mouse separately (LC)
-  ggplot(mut_matrix, aes(x=mutation_count_LC, fill=ELISA_bind)) +
-     geom_histogram(binwidth=.5, alpha=.5, position="identity", stat="count") +
-     geom_vline(aes(xintercept=mean_LC,  colour=ELISA_bind),
-                linetype="dashed", size=1) + facet_wrap(~mouse)
+    # Mutations data
+    if (any(grepl("mutation", colnames(f_temp)))) {
+    # Mutation mean for each group
+    mut_matrix <- f_temp %>% filter(mutation_count_HC < 40) %>%  filter(mutation_count_LC < 20) %>%
+        select(sample, ELISA_bind, mutation_count_HC, mutation_count_LC) %>%
+            group_by(ELISA_bind) %>%
+              mutate(mean_HC = mean(mutation_count_HC, na.rm=T), mean_LC = mean(mutation_count_LC, na.rm=T))
 
+    # Plots histogram of mutations in the heavy chain (_HC)
+    output.plot[["mutation_HC"]] <- ggplot(mut_matrix, aes(x=mutation_count_HC, fill=ELISA_bind)) +
+      geom_histogram(binwidth=.5, alpha=.5, position="identity", stat="count") +
+        geom_vline(aes(xintercept=mean_HC, colour=ELISA_bind), linetype="dashed", size=1) +
+          geom_vline(aes(xintercept=mean_HC, colour=ELISA_bind), linetype="dashed", size=1) +
+            {if (per.sample) facet_wrap(~sample)}
+
+    # Plots histogram of mutations in the light chain (_LC)
+    output.plot[["mutation_LC"]] <- ggplot(mut_matrix, aes(x=mutation_count_LC, fill=ELISA_bind)) +
+      geom_histogram(binwidth=.5, alpha=.5, position="identity", stat="count") +
+        geom_vline(aes(xintercept=mean_LC,  colour=ELISA_bind), linetype="dashed", size=1) +
+          geom_vline(aes(xintercept=mean_LC,  colour=ELISA_bind), linetype="dashed", size=1) +
+            {if (per.sample) facet_wrap(~sample)}
+    }
 
   # gene usage  -------------------------------------------------------------
-  gene_matrix <- features  %>% select(matches("_gene|mouse|ELISA_bind")) %>%
-        group_by(ELISA_bind, mouse)
+  gene_matrix <- f_temp %>% select(matches("_gene|sample|ELISA_bind")) %>% group_by(ELISA_bind)
 
-  # C gene
-  ggplot(gene_matrix, aes(x=mouse, fill=c_gene_HC)) +
-    geom_bar(alpha=.8, position="stack", stat="count") + facet_wrap(~ELISA_bind)
+  output.plot[["c_gene"]] <- ggplot(gene_matrix, aes(x=ELISA_bind, fill=c_gene_HC)) +
+    geom_bar(alpha=.8, position="stack", stat="count") + {if (per.sample) facet_wrap(~sample)}
 
-  # V gene
-  ggplot(gene_matrix, aes(x=mouse, fill=v_gene_HC)) +
-    geom_bar(alpha=.8, position="stack", stat="count") + facet_wrap(~ELISA_bind)
+  output.plot[["v_gene"]] <- ggplot(gene_matrix, aes(x=ELISA_bind, fill=v_gene_HC)) +
+    geom_bar(alpha=.8, position="stack", stat="count") + {if (per.sample) facet_wrap(~sample)}
 
-  # J gene
-  ggplot(gene_matrix, aes(x=mouse, fill=j_gene_HC)) +
-    geom_bar(alpha=.8, position="stack", stat="count") + facet_wrap(~ELISA_bind)
+  output.plot[["j_gene"]] <- ggplot(gene_matrix, aes(x=ELISA_bind, fill=j_gene_HC)) +
+    geom_bar(alpha=.8, position="stack", stat="count") + {if (per.sample) facet_wrap(~sample)}
 
 
-  # CDR3 length
-  clono_matrix <- features %>% filter(!is.na(ELISA_bind)) %>%
-    filter(ELISA_bind %in% c("yes", "no")) %>% group_by(ELISA_bind, mouse) %>%
-      mutate(cdr3_len = str_length(cdr3s_aa), mean_len = mean(str_length(cdr3s_aa)))
+  # CDR3 length -------------------------------------------------------------
+  clono_matrix <- f_temp %>% group_by(ELISA_bind) %>%
+      mutate(cdr3_len = str_length(gsub("IG[H,K,L]:|;|:|NA", "", cdr3s_aa)),
+             mean_len = mean(str_length(gsub("IG[H,K,L]:|;|:|NA", "", cdr3s_aa))))
 
-  ggplot(clono_matrix, aes(x = cdr3_len, fill = ELISA_bind)) +
+  output.plot[["cdr3_length"]] <- ggplot(clono_matrix, aes(x=cdr3_len, fill=ELISA_bind)) +
     geom_histogram(alpha = .5, position = "identity", stat="count") +
-      geom_vline(aes(xintercept = mean_len, colour = ELISA_bind), linetype = "dashed", size = 1) +
-                   facet_wrap(~mouse)
+      geom_vline(aes(xintercept=mean_len,  colour=ELISA_bind), linetype="dashed", size=1) +
+        {if (per.sample) facet_wrap(~sample)}
 
-  # Degenerate mutations analysis
-  features <- features %>% group_by(clonotype_id) %>%
+
+  # Degenerate mutations analysis # --------------------------------------------
+  deg_data <- f_temp %>% group_by(clonotype_id) %>%
     mutate(mean_umis_HC = mean(umis_HC), mean_umis_LC = mean(umis_LC)) %>%
-    mutate(deg_ratio = length(unique(cdr3_HC)) + length(unique(cdr3_LC)) / length(unique(cdr3_nt_HC)) + length(unique(cdr3_nt_LC)))
+      mutate(deg_ratio_HC = length(unique(aa_sequence_HC))/length(unique(sequence_HC))) %>%
+        mutate(deg_ratio_LC = length(unique(aa_sequence_LC))/length(unique(sequence_LC))) %>%
+          mutate(deg_ratio = deg_ratio_HC + deg_ratio_LC)
 
-  ggplot(features, aes(x=deg_ratio, y=umis_HC)) + geom_point() + geom_smooth()
-  ggplot(features, aes(x=deg_ratio, y=umis_LC)) + geom_point() + geom_smooth()
+  output.plot[["deg_ratio_HC"]] <- ggplot(deg_data, aes(x=ELISA_bind, y=deg_ratio_HC)) + geom_violin() + geom_boxplot(width=0.06, color="red") + {if (per.sample) facet_wrap(~sample)}
+  output.plot[["deg_ratio_LC"]] <- ggplot(deg_data, aes(x=ELISA_bind, y=deg_ratio_LC)) + geom_violin() + geom_boxplot(width=0.06, color="red") + {if (per.sample) facet_wrap(~sample)}
+  output.plot[["deg_ratio"]] <- ggplot(deg_data, aes(x=ELISA_bind, y=deg_ratio)) + geom_violin() + geom_boxplot(width=0.06, color="red") + {if (per.sample) facet_wrap(~sample)}
 
-  ggplot(features, aes(x=ELISA_bind, y=deg_ratio)) + geom_col()
+  }
 
+    # Affinity analysis
+    f_temp <- features %>% bind_rows %>% filter(!is.na(octet))
+    if (any(grep("mutation", colnames(f_temp)))) {f_temp <- f_temp %>% filter(mutation_count_HC < 40, mutation_count_LC < 20)
+        if (any(grep("octet", colnames(f_temp)))) {
+
+          output.plot[["affinity_mutations_HC"]] <- ggplot(f_temp, aes(x=mutation_count_HC, y=octet, color=sample)) +
+            scale_y_log10() + scale_x_log10() + geom_point() + geom_smooth(method="lm", aes(fill=sample)) + {if (per.sample) facet_wrap(~sample)}
+
+          output.plot[["affinity_mutations_LC"]] <- ggplot(f_temp, aes(x=mutation_count_LC, y=octet, color=sample)) +
+            scale_y_log10() + scale_x_log10() + geom_point() + geom_smooth(method="lm", aes(fill=sample)) + {if (per.sample) facet_wrap(~sample)}
+
+          output.plot[["affinity_length"]] <- ggplot(f_temp, aes(x=length, y=octet, color=sample)) +
+            scale_y_log10() + scale_x_log10() + geom_point() + geom_smooth(method="lm", aes(fill=sample)) + {if (per.sample) facet_wrap(~sample)}
+
+          n_variants <- f_temp %>% group_by(clonotype_id) %>%
+            mutate(variants_HC = n_distinct(aa_sequence_HC), variants_LC = n_distinct(aa_sequence_LC))
+
+          output.plot[["variants"]] <- ggplot(n_variants, aes(x=variants_HC, y=octet, color=sample)) +
+            scale_y_log10() + scale_x_log10() +
+              geom_point() + geom_smooth(method="lm", aes(fill=sample)) + {if (per.sample) facet_wrap(~sample)}
+        }
+    }
+    return(output.plot)
 }
-
-
-explore_features(features)
