@@ -13,9 +13,9 @@
 
 encode_features <- function(features, encoding, unique.sequences, to.use) {
 
-    require(tidyverse)
-    require(Biostrings)
     require(protr)
+    require(Biostrings)
+    require(tidyverse)
 
     if (missing(unique.sequences)) unique.sequences <- c("aa_sequence_HC", "aa_sequence_LC")
 
@@ -24,13 +24,13 @@ encode_features <- function(features, encoding, unique.sequences, to.use) {
 
     ELISA_bind <- f_temp %>% pull(ELISA_bind)
     octet <- f_temp %>% pull(octet)
-    f_temp <- f_temp %>% select(-c(ELISA_bind, octet, barcode))
+    f_temp <- f_temp %>% dplyr::select(-c(ELISA_bind, octet, barcode))
 
     # Selecting only some features if specified
-    if (!missing(to.use)) f_temp <- f_temp %>% select(to.use, "cdr3s_aa")
+    if (!missing(to.use)) f_temp <- f_temp %>% dplyr::select(to.use, "cdr3s_aa")
 
     # One hot encoding gene information
-    genes <- f_temp %>% select(matches("gene")) %>%
+    genes <- f_temp %>% dplyr::select(matches("gene")) %>%
         sapply(., as.data.frame, stringsAsFactors = T) %>%
             sapply(., function(x) data.frame(sapply(x, as.numeric))) %>% as.data.frame
 
@@ -38,7 +38,7 @@ encode_features <- function(features, encoding, unique.sequences, to.use) {
                          "v_gene_LC", "d_gene_LC",  "j_gene_LC", "c_gene_LC")
 
     # Selecting sequence features
-    f_temp <- f_temp %>% select(matches("cdr|sequence"))
+    f_temp <- f_temp %>% dplyr::select(matches("cdr|sequence"))
 
     if (encoding == "onehot") {
         f_encoded <- lapply(f_temp, function(x)
@@ -50,7 +50,7 @@ encode_features <- function(features, encoding, unique.sequences, to.use) {
 
     if (str_detect(encoding, "[0-9,k]mer")) {
         if (str_starts(encoding, "k")) num <- 3 else num <- as.numeric(substr(encoding, 1, 1))
-        f_encoded <- f_temp %>% select(matches("cdr3_nt_[H,L]C|$sequence_[H,L]C")) %>%
+        f_encoded <- f_temp %>% dplyr::select(matches("cdr3_nt_[H,L]C|$sequence_[H,L]C")) %>%
             lapply(function(x) as.data.frame(oligonucleotideFrequency(DNAStringSet(x), num))) %>% bind_cols
     }
 

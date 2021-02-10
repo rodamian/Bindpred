@@ -56,13 +56,13 @@ load_data <- function(VDJ.directory, clonotype.level, filter.prod, filter.confid
                                              case_when(filter.confidence ~ high_confidence %>% str_detect("(?i)true")),
                                              case_when(filter.prod ~productive %>% str_detect("(?i)true"))) %>%
                                              rename("raw_clonotype_id" = "clonotype_id") %>%
-                                             select(-c(is_cell, full_length, productive, reads, high_confidence)))
+                                             dplyr::select(-c(is_cell, full_length, productive, reads, high_confidence)))
 
   # Filtering annotations by specified parameters
   annotations.list <- map(annotations.list, ~filter(., case_when(filter.is.cell ~ is_cell == T),
                                                        case_when(filter.confidence ~ high_confidence == T),
                                                        case_when(filter.prod ~ productive == T)) %>%
-                                                       select(-c(is_cell, productive, high_confidence)))
+                                                       dplyr::select(-c(is_cell, productive, high_confidence)))
 
   # Adding gene expression information # -------------------------------------------------------------------------
   print("Processing gene expression information")
@@ -89,7 +89,7 @@ load_data <- function(VDJ.directory, clonotype.level, filter.prod, filter.confid
   red_data <- lapply(GEX.list, function(x) {if (typeof(x) == "S4")
     rownames_to_column(as.data.frame(x@reductions[[red.method]]@cell.embeddings), var = "barcode")})
 
-  red_data <- map2(red_data, contig.list, ~{if (!is.null(.x)) inner_join(.x, select(.y, c(barcode, clonotype_id)), by = "barcode")})
+  red_data <- map2(red_data, contig.list, ~{if (!is.null(.x)) inner_join(.x, dplyr::select(.y, c(barcode, clonotype_id)), by = "barcode")})
 
   # -------------------------------------------------------------------------
 
@@ -98,7 +98,7 @@ load_data <- function(VDJ.directory, clonotype.level, filter.prod, filter.confid
   shm <- map_if(VDJ.directory, ~file.exists(paste0(., "/concat_ref.bam")), ~as.data.frame(scanBam(paste0(., "/concat_ref.bam"))) %>%
     rename("qname" = "contig_id") %>%
       mutate(mutation_count = str_extract_all(cigar, "[0-9]+(?=[X])")) %>%
-      select(contig_id, mutation_count, cigar) %>% mutate(mutation_count = sapply(.$mutation_count, function(x) sum(as.numeric(x)))))
+      dplyr::select(contig_id, mutation_count, cigar) %>% mutate(mutation_count = sapply(.$mutation_count, function(x) sum(as.numeric(x)))))
 
 
   if (clonotype.level == TRUE) {
@@ -108,13 +108,13 @@ load_data <- function(VDJ.directory, clonotype.level, filter.prod, filter.confid
     genes <- map(contig.list, ~group_by(., clonotype_id, chain, barcode) %>%
                summarize_at(vars(ends_with("gene")), ~names(which.max(table(.)))) %>%
                 inner_join(filter(., chain == "IGH"), filter(., str_detect(chain, "IGK|IGL")), by = "clonotype_id", suffix = c("_HC", "_LC")) %>%
-                  distinct(clonotype_id, .keep_all = T) %>% select(-c(barcode_LC, chain_HC, chain_LC, barcode_HC)))
+                  distinct(clonotype_id, .keep_all = T) %>% dplyr::select(-c(barcode_LC, chain_HC, chain_LC, barcode_HC)))
 
     clonotype.list <- clonotype.list <- map2(clonotype.list, genes, ~left_join(.x, .y, by = "clonotype_id", suffix = c("", "")))
 
     # Adding mean of pca components
     clonotype.list <- map2(clonotype.list, red_data, ~{if (!is.null(.y))
-      left_join(.x, group_by(.y, clonotype_id) %>% select(-barcode) %>% summarise_each(funs(mean(., na.rm = T))), by = "clonotype_id")
+      left_join(.x, group_by(.y, clonotype_id) %>% dplyr::select(-barcode) %>% summarise_each(funs(mean(., na.rm = T))), by = "clonotype_id")
       else .x} %>% rename("CDR3H_nt" = "cdr3_nt_HC", "CDR3L_nt" = "cdr3_nt_LC"))
 
     return(clonotype.list)
@@ -126,7 +126,7 @@ load_data <- function(VDJ.directory, clonotype.level, filter.prod, filter.confid
     # Fusing HC and LC contigs from same cell in one row
     vdj.per.cell <- map(contig.list,
       ~left_join(filter(., chain %in% "IGH"),
-        filter(select(., barcode, cdr3, cdr3_nt, chain, contig_id, umis, ends_with("gene")), chain %in% c("IGK", "IGL")), by = "barcode", suffix = c("_HC", "_LC")))
+        filter(dplyr::select(., barcode, cdr3, cdr3_nt, chain, contig_id, umis, ends_with("gene")), chain %in% c("IGK", "IGL")), by = "barcode", suffix = c("_HC", "_LC")))
 
     # Pasted CDR3
     vdj.per.cell <- map(vdj.per.cell, ~unite(., cdr3_HC, "chain_HC", "cdr3_HC", sep = ":") %>%
@@ -139,21 +139,21 @@ load_data <- function(VDJ.directory, clonotype.level, filter.prod, filter.confid
     vdj.per.cell <- mapply(cbind, vdj.per.cell, "sample" = sample_number, SIMPLIFY = F)
 
     # Adding aa sequence
-    vdj.per.cell <- map2(vdj.per.cell, annotations.list, ~left_join(.x, select(.y, aa_sequence, contig_name), by = c("contig_id_HC" = "contig_name"), suffix=c("_HC", "_LC")))
-    vdj.per.cell <- map2(vdj.per.cell, annotations.list, ~left_join(.x, select(.y, aa_sequence, contig_name), by = c("contig_id_LC" = "contig_name"), suffix=c("_HC", "_LC")))
+    vdj.per.cell <- map2(vdj.per.cell, annotations.list, ~left_join(.x, dplyr::select(.y, aa_sequence, contig_name), by = c("contig_id_HC" = "contig_name"), suffix=c("_HC", "_LC")))
+    vdj.per.cell <- map2(vdj.per.cell, annotations.list, ~left_join(.x, dplyr::select(.y, aa_sequence, contig_name), by = c("contig_id_LC" = "contig_name"), suffix=c("_HC", "_LC")))
 
     # Adding nt sequence
     trimmed <- map(annotations.list, ~filter(., !is.na(start_codon_pos)) %>%
-        mutate(., sequence = str_sub(sequence, start_codon_pos + 1)) %>% select(sequence, contig_name))
+        mutate(., sequence = str_sub(sequence, start_codon_pos + 1)) %>% dplyr::select(sequence, contig_name))
 
     vdj.per.cell <- map2(vdj.per.cell, trimmed, ~left_join(.x, .y, by = c("contig_id_HC" = "contig_name"), suffix = c("_HC", "_LC")))
     vdj.per.cell <- map2(vdj.per.cell, trimmed, ~left_join(.x, .y, by = c("contig_id_LC" = "contig_name"), suffix = c("_HC", "_LC")))
 
     # Adding pca components
-    vdj.per.cell <- map2(vdj.per.cell, red_data, ~{if (!is.null(.y)) left_join(.x, select(.y, -clonotype_id), by = "barcode") else .x})
+    vdj.per.cell <- map2(vdj.per.cell, red_data, ~{if (!is.null(.y)) left_join(.x, dplyr::select(.y, -clonotype_id), by = "barcode") else .x})
 
     # Removing contig_id
-    vdj.per.cell <- map(vdj.per.cell, ~select(., -c(contig_id_HC, contig_id_LC, raw_consensus_id)))
+    vdj.per.cell <- map(vdj.per.cell, ~dplyr::select(., -c(contig_id_HC, contig_id_LC, raw_consensus_id)))
 
     return(vdj.per.cell)
   }

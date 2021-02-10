@@ -15,19 +15,24 @@ predict_affinity <- function(features, unique.sequences, encoding, to.use) {
 
   require(tidyverse)
   require(xgboost)
-  require(e1071)
   require(protr)
   require(glmnet)
+
+  theme_set(theme_bw())
+  update_geom_defaults("point", list(size = 0.7))
+  update_geom_defaults("smooth", list(alpha = 0.25, size = 0.7))
 
   if (missing(unique.sequences)) unique.sequences <- c("aa_sequence_HC", "aa_sequence_LC")
   if (missing(encoding)) encoding <- "onehot"
 
   f_encoded <- Bindpred::encode_features(features, encoding, unique.sequences, to.use) %>% drop_na(octet)
   target <- f_encoded %>% pull(octet)
-  f_encoded <- f_encoded %>% select(-c(ELISA_bind, octet))
+  f_encoded <- f_encoded %>% dplyr::select(-c(ELISA_bind, octet))
+
+  if (all(is.na(target))) stop("No affinity measure provided")
 
   # train test split --------------------------------------------------------
-  sample <- sample.int(n = nrow(f_encoded), size = floor(0.7 * nrow(f_encoded)), replace = F, useHash = F)
+  sample <- sample.int(n = nrow(f_encoded), size = floor(0.75 * nrow(f_encoded)), replace = F, useHash = F)
 
   x_train <- f_encoded[sample, ]
   x_test  <- f_encoded[-sample, ]
@@ -35,51 +40,45 @@ predict_affinity <- function(features, unique.sequences, encoding, to.use) {
   y_test <- target[-sample]
 
   # Model generation and training --------------------------------------------------------
+  models <- list()
 
   # Ridge regression
   lambdas = 10^seq(4, -3, by = -.1)
   cv_ridge = cv.glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=lambdas)
   best_lambda <- cv_ridge$lambda.min
-  ridge <- glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=best_lambda)
+  models[["ridge"]] <- glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=best_lambda)
 
   # Setting alpha = 1 implements lasso regression
   cv_lasso <- cv.glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = lambdas, standardize = T, nfolds = 5)
   best_lambda <- cv_lasso$lambda.min
-  lasso <- glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = best_lambda, standardize = T)
+  models[["lasso"]] <- glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = best_lambda, standardize = T)
 
   # XGBRegressor
-  xgb <- xgboost(as.matrix(x_train), as.numeric(as.factor(y_train))-1, nrounds = 10, max.depth = 8, eta=1)
+  models[["xgb"]] <- xgboost(as.matrix(x_train), y_train,
+                              booster = "gbtree",
+                              lambda = 0.5,
+                              objective = "reg:tweedie",
+                              eval_metric = "rmse",
+                              nrounds = 20,
+                              max.depth = 5,
+                              eta=1)
 
-  importance_matrix <- xgb.importance(model = xgb)
+  importance_matrix <- xgb.importance(model = models[["xgb"]])
   importance_plot <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25)
 
   # Model comparison --------------------------------------------------------
 
-  # Compute R^2 from true and predicted values
-  eval_results <- function(true, predicted, df) {
-    SSE <- sum((predicted - true)^2)
-    SST <- sum((true - mean(true))^2)
-    R_square <- 1 - SSE / SST
-    RMSE = sqrt(SSE/nrow(df))
+  # Compute R squared from true and predicted values
+  RMSE <- function (pred, obs) round(sqrt(mean((pred - obs)^2)), 3)
 
-    data.frame(RMSE = RMSE, Rsquare = R_square)
-  }
+  preds <- lapply(models, predict, as.matrix(x_test)) %>% lapply(as.numeric)
 
-  pred_ridge <- predict(ridge, as.matrix(x_test))[,1]
-  pred_lasso <- predict(lasso, as.matrix(x_test))[,1]
-  pred_xgb <- predict(xgb, as.matrix(x_test))
-
-  rmse_ridge <- eval_results(y_test, pred_ridge, x_test)
-  rmse_lasso <- eval_results(y_test, pred_lasso, x_test)
-  rmse_xgb <- eval_results(y_test, pred_xgb, x_test)
+  rmse <- lapply(preds, RMSE, y_test)
 
   # Plots -------------------------------------------------------------------
 
-  plot_data <- gather(data.frame(ridge = pred_ridge, lasso = pred_lasso, xgb = pred_xgb), key = model, value = predicted) %>%
-    mutate(true = rep(y_test, 3)) %>%
-      mutate(RMSE = c(rep(rmse_ridge$RMSE, length(y_test)),
-                      rep(rmse_lasso$RMSE, length(y_test)),
-                      rep(rmse_xgb$RMSE, length(y_test))))
+  plot_data <- as.data.frame(preds) %>% gather(key = model, value = predicted) %>%
+    mutate(true = rep(y_test, length(models))) %>% mutate(model = paste(model, " RMSE: ", as.character(rmse[model])))
 
   # Log scale
   output.plot <- list()
@@ -88,7 +87,7 @@ predict_affinity <- function(features, unique.sequences, encoding, to.use) {
       geom_point() + geom_smooth(method="lm", aes(fill=model), alpha=0.2) +
          scale_y_log10(limits = c(1, ceiling(max(y_test)))) + scale_x_log10(limits = c(1, ceiling(max(y_test)))) +
             geom_abline(slope=1, linetype = "dashed", color = "grey") +
-                ggtitle(paste0("encoding: ", encoding)) + labs(linetype = "model")
+                ggtitle(paste0("encoding: ", encoding)) + theme(legend.position="bottom")
 
   output.plot[["importance"]] <- importance_plot
 

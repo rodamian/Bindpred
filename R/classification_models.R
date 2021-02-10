@@ -17,15 +17,19 @@ classify_data <- function(features, to.use, unique.sequences, encoding) {
   require(naivebayes)
   require(xgboost)
   require(e1071)
-  require(Ckmeans.1d.dp)
   require(pROC)
+  library(kernlab)
+  library(speedglm)
+  library(caret)
+  require(Ckmeans.1d.dp)
 
+  theme_set(theme_bw())
   if (missing(unique.sequences)) unique.sequences <- c("aa_sequence_HC", "aa_sequence_LC")
-  if (missing(encoding)) encoding <- "protr.cdr3"
+  if (missing(encoding)) encoding <- "onehot"
 
-  f_encoded <- encode_features(features, encoding, unique.sequences)
+  f_encoded <- encode_features(features, encoding, unique.sequences, to.use)
   target <- f_encoded %>% pull(ELISA_bind) %in% c("yes", "no") %>% as.factor
-  f_encoded <- f_encoded %>% select(-c(ELISA_bind, octet))
+  f_encoded <- f_encoded %>% dplyr::select(-c(ELISA_bind, octet))
 
   # train test split --------------------------------------------------------
   train_id <- sample(1:nrow(f_encoded), size = floor(0.75 * nrow(f_encoded)), replace=F)
@@ -36,42 +40,54 @@ classify_data <- function(features, to.use, unique.sequences, encoding) {
   y_test <- target[-train_id]
 
   # Model generation and training -------------------------------------------
-  gnb <- gaussian_naive_bayes(as.matrix(x_train), y_train)
+  models <- list()
 
-  svm <- svm(x_train, y_train, kernel = "radial", probability = T,
-             scale = vapply(f_encoded, function(x) length(unique(x)) > 5, logical(1L)))
+  models[["gnb"]] <- gaussian_naive_bayes(as.matrix(x_train), y_train)
 
-  xgb <- xgboost(as.matrix(x_train), label = y_train, nround = 10, params = list(
-    booster = "gbtree",
-    max_depth = 5,
-    lambda = 0.5,
-    objective = "binary:logistic",
-    eval_metric = "auc"))
+  # models[["svm"]] <- ksvm(y_train, data=x_train,
+  #             kernel = "rbfdot",
+  #             kpar = list(sigma=0.015),
+  #             C = 70,
+  #             cross = 5,
+  #             prob.model = TRUE)
+  #
+  # models[["svm"]] <- svm_model <- e1071::svm(
+  #             x_train,
+  #             as.numeric(y_train),
+  #             kernel = "linear",
+  #             cost = 10,
+  #             probability = TRUE)
 
-  # glm <- glm(y_train ~., family = binomial(link='logit'), data = as.data.frame(x_train), control = list(maxit = 50))
+  # models[["svm"]] <- svm(x_train, y_train, kernel = "radial", probability = TRUE)
+
+  models[["xgb"]] <- xgboost(as.matrix(x_train), label = as.numeric(y_train)-1, nround = 10,
+              params = list(
+              booster = "gbtree",
+              max_depth = 8,
+              lambda = 0.5,
+              objective = "binary:logistic",
+              eval_metric = "auc"))
+
+  # models[["glm"]] <- speedglm(y_train ~., family = binomial(link='logit'), data = x_train, control = list(maxit = 5))
 
   # Calculating probabilities
-  probs_gnb <- gnb %prob% as.matrix(x_test)
-  probs_xgb <- predict(xgb, as.matrix(x_test))
-  probs_svm <- predict(svm, as.matrix(x_test), probability = T)
-  # probs_glm <- predict(glm, as.data.frame(x_test), probability = T)
+  probs <- lapply(models, predict, as.matrix(x_test), type = "prob")
 
   # Model evaluation --------------------------------------------------------
-  roc_xgb <- roc(y_test, probs_xgb)
-  roc_gnb <- roc(y_test, probs_gnb[,2])
-  roc_svm <- roc(y_test, attr(probs_svm, "probabilities")[,1], levels=c("no", "yes"))
-  # roc_glm <- roc(y_test, probs_glm, levels=c("no", "yes"))
+  ROC <- lapply(probs, function(x) if (NCOL(x) == 2) roc(y_test, x[,2]) else roc(y_test, x))
 
   # Model comparison --------------------------------------------------------
-  roc_plot <- plot(roc_xgb, col = "blue", print.auc=T, print.auc.y=0.9, print.auc.x=0.1)
-  roc_plot <- plot(roc_gnb, col = "green", add=T, print.auc=T, print.auc.y=.8, print.auc.x=0.1)
-  roc_plot <- plot(roc_svm, col = "red", add=T, print.auc=T, print.auc.y=.7, print.auc.x=0.1)
-  # roc_plot <- plot(roc_glm, col = "grey", add=T, print.auc=T, print.auc.y=.6, print.auc.x=0.1)
+  output.plot <- list()
 
-  roc_plot <- legend("bottomright", legend=c("XGB", "NB", "SVM", "LogReg"), col=c("blue", "green", "red", "grey"), lwd=2)
+  output.plot[["roc"]] <- ggroc(ROC) +
+    geom_abline(slope=1, linetype = "dashed", color = "grey", intercept = 1) +
+      ggtitle(paste0("encoding: ", encoding)) + labs(color = "model") +
+        annotate(geom = "text", x = 0.25, y = seq(0.1, 0.4, length.out = length(ROC)),
+          label = paste(names(ROC), "AUC: ", sapply(ROC, function(x) as.character(round(x$auc, 3)))))
 
-  importance_matrix <- xgb.importance(model = xgb)
-  importance_plot <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25)
+  importance_matrix <- xgb.importance(model = models[["xgb"]])
+  output.plot[["importance"]] <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25, measure = "Gain")
 
-  return(list(roc_plot, importance_plot))
+
+  return(output.plot)
 }
