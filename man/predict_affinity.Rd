@@ -4,7 +4,13 @@
 \alias{predict_affinity}
 \title{Assings to the repertoire sequencing data a scalar value representing the predicted affinity for each cell/clonotype (the lower the value the higher the affinity). This can be done both at the clonotype level or at the single cell level.}
 \usage{
-predict_affinity(features, unique.sequences, encoding, to.use)
+predict_affinity(
+  features,
+  unique.sequences = c("aa_sequence_HC", "aa_sequence_LC"),
+  encoding = "onehot",
+  to.use = c("cdr3s_aa", "cdr3s_nt", "aa_sequence_HC", "aa_sequence_LC"),
+  cv = 5
+)
 }
 \arguments{
 \item{features}{List of dataframes containing the extracted features. This is the output of load_data function.}
@@ -14,6 +20,8 @@ predict_affinity(features, unique.sequences, encoding, to.use)
 \item{encoding}{Character indicating which encoding strategy to use. Options are "onehot", "kmer". Default is set to "onehot".}
 
 \item{to.use}{Character vector indicating which features to use. If not supplied all the features will be used}
+
+\item{cv}{Numeric indicating the number of folds used in cross validation. Default is 5.}
 }
 \value{
 This function plots the predicted affinity scores against the actual affinities for each model and plots feature importance for XGBoost.

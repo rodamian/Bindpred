@@ -3,6 +3,7 @@
 #' @param unique.sequences Names of the sequences to be kept. Default is c("aa_sequence_HC", "aa_sequence_LC") which keeps every cell with a unique combination of heavy and light chain sequences. Other options include "clonotype_id", "cdr3s_aa", "aa_sequence_HC".
 #' @param encoding Character indicating which encoding strategy to use. Options are "onehot", "kmer". Default is set to "onehot".
 #' @param to.use Character vector indicating which features to use. If not supplied all the features will be used
+#' @param cv Numeric indicating the number of folds used in cross validation. Default is 5.
 #' @return This function plots the predicted affinity scores against the actual affinities for each model and plots feature importance for XGBoost.
 #' @export
 #' @examples
@@ -11,88 +12,93 @@
 #' }
 #'
 
-predict_affinity <- function(features, unique.sequences, encoding, to.use) {
+predict_affinity <- function(features,
+                             unique.sequences = c("aa_sequence_HC", "aa_sequence_LC"),
+                             encoding = "onehot",
+                             to.use = c("cdr3s_aa", "cdr3s_nt", "aa_sequence_HC", "aa_sequence_LC"),
+                             cv = 5) {
 
   require(tidyverse)
   require(xgboost)
-  require(e1071)
   require(protr)
   require(glmnet)
+  theme_set(theme_bw())
+  update_geom_defaults("point", list(size = 0.7))
+  update_geom_defaults("smooth", list(alpha = 0.25, size = 0.7))
 
-  if (missing(unique.sequences)) unique.sequences <- c("aa_sequence_HC", "aa_sequence_LC")
-  if (missing(encoding)) encoding <- "onehot"
+  f_encoded <- encode_features(features, encoding, unique.sequences, to.use)
+  f_encoded <- f_encoded %>% drop_na(octet) %>% dplyr::select(-ELISA_bind)
 
-  f_encoded <- Bindpred::encode_features(features, encoding, unique.sequences, to.use) %>% drop_na(octet)
-  target <- f_encoded %>% pull(octet)
-  f_encoded <- f_encoded %>% select(-c(ELISA_bind, octet))
+  # Cross validation
+  folds <- createFolds(f_encoded$octet, k = cv)
 
-  # train test split --------------------------------------------------------
-  sample <- sample.int(n = nrow(f_encoded), size = floor(0.7 * nrow(f_encoded)), replace = F, useHash = F)
+  crossv <- lapply(folds, function(n) {
 
-  x_train <- f_encoded[sample, ]
-  x_test  <- f_encoded[-sample, ]
-  y_train <- target[sample]
-  y_test <- target[-sample]
+    # train test split --------------------------------------------------------
+    x_train <- as.matrix(f_encoded[-n,] %>% dplyr::select(-octet))
+    x_test  <- as.matrix(f_encoded[n,] %>% dplyr::select(-octet))
+    y_train <- f_encoded[-n,]$octet
+    y_test <- f_encoded[n,]$octet
 
-  # Model generation and training --------------------------------------------------------
+    # Model generation and training -------------------------------------------
+    models <- list()
 
-  # Ridge regression
-  lambdas = 10^seq(4, -3, by = -.1)
-  cv_ridge = cv.glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=lambdas)
-  best_lambda <- cv_ridge$lambda.min
-  ridge <- glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=best_lambda)
+    # Ridge regression
+    lambdas = 10^seq(4, -3, by = -.1)
+    cv_ridge = cv.glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=lambdas)
+    best_lambda <- cv_ridge$lambda.min
+    models[["ridge"]] <- glmnet(as.matrix(x_train), y_train, nlambda=25, alpha=0, family="gaussian", lambda=best_lambda)
 
-  # Setting alpha = 1 implements lasso regression
-  cv_lasso <- cv.glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = lambdas, standardize = T, nfolds = 5)
-  best_lambda <- cv_lasso$lambda.min
-  lasso <- glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = best_lambda, standardize = T)
+    # Setting alpha = 1 implements lasso regression
+    cv_lasso <- cv.glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = lambdas, standardize = T, nfolds = 5)
+    best_lambda <- cv_lasso$lambda.min
+    models[["lasso"]] <- glmnet(as.matrix(x_train), y_train, alpha = 1, lambda = best_lambda, standardize = T)
 
-  # XGBRegressor
-  xgb <- xgboost(as.matrix(x_train), as.numeric(as.factor(y_train))-1, nrounds = 10, max.depth = 8, eta=1)
+    # XGBRegressor
+    models[["xgb"]] <- xgboost(as.matrix(x_train), y_train,
+                               booster = "gbtree",
+                               lambda = 0.5,
+                               objective = "reg:tweedie",
+                               eval_metric = "rmse",
+                               nrounds = 14,
+                               eta=1)
 
-  importance_matrix <- xgb.importance(model = xgb)
-  importance_plot <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25)
+    # Prediction
+    preds <- data.frame(sapply(models, predict, x_test))
+    colnames(preds) <- names(models)
+    rownames(preds) <- n
+
+    return(preds)
+  })
+
+  # Model evaluation --------------------------------------------------------
+  preds <- crossv %>% purrr::reduce(rbind)
+  preds <- preds[order(as.numeric(rownames(preds))),]
 
   # Model comparison --------------------------------------------------------
 
-  # Compute R^2 from true and predicted values
-  eval_results <- function(true, predicted, df) {
-    SSE <- sum((predicted - true)^2)
-    SST <- sum((true - mean(true))^2)
-    R_square <- 1 - SSE / SST
-    RMSE = sqrt(SSE/nrow(df))
+  # Compute R squared from true and predicted values
+  RMSE <- function (pred, obs) round(sqrt(mean((pred - obs)^2)), 3)
 
-    data.frame(RMSE = RMSE, Rsquare = R_square)
-  }
-
-  pred_ridge <- predict(ridge, as.matrix(x_test))[,1]
-  pred_lasso <- predict(lasso, as.matrix(x_test))[,1]
-  pred_xgb <- predict(xgb, as.matrix(x_test))
-
-  rmse_ridge <- eval_results(y_test, pred_ridge, x_test)
-  rmse_lasso <- eval_results(y_test, pred_lasso, x_test)
-  rmse_xgb <- eval_results(y_test, pred_xgb, x_test)
+  rmse <- lapply(preds, RMSE, f_encoded$octet)
 
   # Plots -------------------------------------------------------------------
 
-  plot_data <- gather(data.frame(ridge = pred_ridge, lasso = pred_lasso, xgb = pred_xgb), key = model, value = predicted) %>%
-    mutate(true = rep(y_test, 3)) %>%
-      mutate(RMSE = c(rep(rmse_ridge$RMSE, length(y_test)),
-                      rep(rmse_lasso$RMSE, length(y_test)),
-                      rep(rmse_xgb$RMSE, length(y_test))))
+  plot_data <- as.data.frame(preds) %>% gather(key = model, value = predicted) %>%
+    mutate(true = rep(f_encoded$octet, ncol(preds))) %>% mutate(model = paste(model, " RMSE: ", as.character(rmse[model])))
 
   # Log scale
   output.plot <- list()
 
   output.plot[["reg"]] <- ggplot(plot_data, aes(x=true, y=predicted, color=model)) +
       geom_point() + geom_smooth(method="lm", aes(fill=model), alpha=0.2) +
-         scale_y_log10(limits = c(1, ceiling(max(y_test)))) + scale_x_log10(limits = c(1, ceiling(max(y_test)))) +
+         scale_y_log10(limits = c(1, ceiling(max(f_encoded$octet)))) + scale_x_log10(limits = c(1, ceiling(max(f_encoded$octet)))) +
             geom_abline(slope=1, linetype = "dashed", color = "grey") +
-                ggtitle(paste0("encoding: ", encoding)) + labs(linetype = "model")
+                ggtitle(paste0("encoding: ", encoding)) + theme(legend.position="bottom")
 
-  output.plot[["importance"]] <- importance_plot
+  # importance_matrix <- xgb.importance(model = models[["xgb"]])
+  # output.plot[["importance"]] <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25)
 
   return(output.plot)
-
 }
 

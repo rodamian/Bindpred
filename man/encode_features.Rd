@@ -2,9 +2,16 @@
 % Please edit documentation in R/encode_features.R
 \name{encode_features}
 \alias{encode_features}
-\title{Encodes repertoire features with different methods. Gene usage features are encoded using one hot encoding irrespective of the encoding method used. Sequence features can be encoded using multiple methods.}
+\title{Encodes repertoire features with different methods. Gene usage features are encoded using one hot encoding irrespective of the encoding method used. Positions of insertions deletions and mutations are provided if not specified otherwise. Sequence features can be encoded using multiple methods.}
 \usage{
-encode_features(features, encoding, unique.sequences, to.use)
+encode_features(
+  features,
+  encoding = "onehot",
+  unique.sequences = "cdr3s_aa",
+  to.use = c("cdr3s_aa", "cdr3s_nt", "aa_sequence_HC", "aa_sequence_LC"),
+  filter.corr = 0.9,
+  filter.unique.values = 4
+)
 }
 \arguments{
 \item{features}{List of dataframes containing the extracted features. This is the output of load_data function.}
@@ -14,12 +21,14 @@ encode_features(features, encoding, unique.sequences, to.use)
 \item{unique.sequences}{Level at which unique sequences are filtered. Default is c("aa_sequence_HC", "aa_sequence_LC") which keeps every cell with a unique combination of heavy and light chain amino acid sequences. Other options include "clonotype_id", "cdr3s_aa", "aa_sequence_HC".}
 
 \item{to.use}{Character vector indicating which features to use. If not supplied all the features will be used}
+
+\item{filter.corr}{Numeric indicating the minimum number of unique values per feature. Important when calculating the tripeptide composition for short sequences. Default is 3.}
 }
 \value{
 Returns encoded features
 }
 \description{
-Encodes repertoire features with different methods. Gene usage features are encoded using one hot encoding irrespective of the encoding method used. Sequence features can be encoded using multiple methods.
+Encodes repertoire features with different methods. Gene usage features are encoded using one hot encoding irrespective of the encoding method used. Positions of insertions deletions and mutations are provided if not specified otherwise. Sequence features can be encoded using multiple methods.
 }
 \examples{
 \dontrun{

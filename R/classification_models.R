@@ -1,8 +1,9 @@
 #' Classifies the repertoire sequencing data binarily (binding / not binding). This can be done both at the clonotype level or at the single cell level.
 #' @param features List of dataframes containing the extracted features. This is the output of load_data function.
-#' @param to.use Character vector indicating which features to use. If not supplied all the features will be used
 #' @param unique.sequences Names of the sequences to be kept. Default is c("aa_sequence_HC", "aa_sequence_LC") which keeps every cell with a unique combination of heavy and light chain sequences. Other options include "clonotype_id", "cdr3s_aa", "aa_sequence_HC".
 #' @param encoding Character indicating which encoding strategy to use. Options are "onehot", "kmer", "protr". To set the kmer size set encoding = "5mer" for size 5. If only "kmer" is given the default size is 3. The default overall is set to "onehot".
+#' @param to.use Character vector indicating which features to use. If not supplied all the features will be used
+#' @param cv Numeric indicating the number of folds used in cross validation. Default is 5.
 #' @return This function plots AUC scores for each model, feature importance for XGBoost and return the predicted labels (Binding / not Binding)
 #' @export
 #' @examples
@@ -11,67 +12,95 @@
 #' }
 #'
 
-classify_data <- function(features, to.use, unique.sequences, encoding) {
+classify_data <- function(features,
+                          unique.sequences = "cdr3s_aa",
+                          encoding = "onehot",
+                          to.use = c("cdr3s_aa", "cdr3s_nt", "aa_sequence_HC", "aa_sequence_LC"),
+                          cv = 5) {
 
   require(tidyverse)
-  require(naivebayes)
+  require(fastNaiveBayes)
   require(xgboost)
   require(e1071)
-  require(Ckmeans.1d.dp)
   require(pROC)
+  require(caret)
+  require(mboost)
+  require(Ckmeans.1d.dp)
+  theme_set(theme_bw())
 
-  if (missing(unique.sequences)) unique.sequences <- c("aa_sequence_HC", "aa_sequence_LC")
-  if (missing(encoding)) encoding <- "protr.cdr3"
+  f_encoded <- encode_features(features, encoding, unique.sequences, to.use)
+  f_encoded <- f_encoded %>% filter(ELISA_bind %in% c("yes", "no")) %>% dplyr::select(-octet)
 
-  f_encoded <- encode_features(features, encoding, unique.sequences)
-  target <- f_encoded %>% pull(ELISA_bind) %in% c("yes", "no") %>% as.factor
-  f_encoded <- f_encoded %>% select(-c(ELISA_bind, octet))
+  # Setting target variable to 0,1
+  f_encoded$ELISA_bind <- as.numeric(as.factor(f_encoded$ELISA_bind)) - 1
 
-  # train test split --------------------------------------------------------
-  train_id <- sample(1:nrow(f_encoded), size = floor(0.75 * nrow(f_encoded)), replace=F)
+  folds <- createFolds(f_encoded$ELISA_bind, k = cv)
 
-  x_train <- f_encoded[train_id, ]
-  x_test  <- f_encoded[-train_id, ]
-  y_train <- target[train_id]
-  y_test <- target[-train_id]
+  # Cross validation
+  crossv <- lapply(folds, function(n) {
 
-  # Model generation and training -------------------------------------------
-  gnb <- gaussian_naive_bayes(as.matrix(x_train), y_train)
+    # train test split --------------------------------------------------------
+    x_train <- as.matrix(f_encoded[-n,] %>% dplyr::select(-ELISA_bind))
+    x_test  <- as.matrix(f_encoded[n,] %>% dplyr::select(-ELISA_bind))
+    y_train <- f_encoded[-n,]$ELISA_bind
+    y_test <- f_encoded[n,]$ELISA_bind
 
-  svm <- svm(x_train, y_train, kernel = "radial", probability = T,
-             scale = vapply(f_encoded, function(x) length(unique(x)) > 5, logical(1L)))
+    # Model generation and training -------------------------------------------
+    models <- list()
 
-  xgb <- xgboost(as.matrix(x_train), label = y_train, nround = 10, params = list(
-    booster = "gbtree",
-    max_depth = 5,
-    lambda = 0.5,
-    objective = "binary:logistic",
-    eval_metric = "auc"))
+    # models[["gnb"]] <- fastNaiveBayes(
+    #                         x_train,
+    #                         y_train)
 
-  # glm <- glm(y_train ~., family = binomial(link='logit'), data = as.data.frame(x_train), control = list(maxit = 50))
+    models[["svm"]] <- e1071::svm(formula = y_train ~ .,
+                            data = x_train,
+                            kernel = 'radial',
+                            probability = TRUE)
 
-  # Calculating probabilities
-  probs_gnb <- gnb %prob% as.matrix(x_test)
-  probs_xgb <- predict(xgb, as.matrix(x_test))
-  probs_svm <- predict(svm, as.matrix(x_test), probability = T)
-  # probs_glm <- predict(glm, as.data.frame(x_test), probability = T)
+    models[["xgb"]] <- xgb.train(params = list(
+                            booster = "gbtree",
+                            objective = "binary:logistic",
+                            eval_metric = "auc",
+                            max_depth = 8),
+                            data = xgb.DMatrix(
+                                label = y_train,
+                                data = x_train),
+                            nrounds = 25)
+
+    models[["glm"]] <- glmboost(x_train,
+                            y_train,
+                            family = Gaussian(),
+                            control = boost_control())
+
+
+    # Calculating probabilities
+    probs <- data.frame(sapply(models, predict, newdata = x_test))
+    colnames(probs) <- names(models)
+    rownames(probs) <- n
+
+    return(probs)
+  })
 
   # Model evaluation --------------------------------------------------------
-  roc_xgb <- roc(y_test, probs_xgb)
-  roc_gnb <- roc(y_test, probs_gnb[,2])
-  roc_svm <- roc(y_test, attr(probs_svm, "probabilities")[,1], levels=c("no", "yes"))
-  # roc_glm <- roc(y_test, probs_glm, levels=c("no", "yes"))
+  probs <- crossv %>% purrr::reduce(rbind)
+  probs <- probs[order(as.numeric(rownames(probs))),]
+  rocs <- lapply(probs, function(x) roc(f_encoded$ELISA_bind, x, ci = T))
+
+  # Confidence intervals
+  # ci.sp <- lapply(rocs, ci.sp, sensitivities=seq(0, 1, .01), boot.n=100)
+  conf <- lapply(rocs, ci)
 
   # Model comparison --------------------------------------------------------
-  roc_plot <- plot(roc_xgb, col = "blue", print.auc=T, print.auc.y=0.9, print.auc.x=0.1)
-  roc_plot <- plot(roc_gnb, col = "green", add=T, print.auc=T, print.auc.y=.8, print.auc.x=0.1)
-  roc_plot <- plot(roc_svm, col = "red", add=T, print.auc=T, print.auc.y=.7, print.auc.x=0.1)
-  # roc_plot <- plot(roc_glm, col = "grey", add=T, print.auc=T, print.auc.y=.6, print.auc.x=0.1)
+  output.plot <- list()
 
-  roc_plot <- legend("bottomright", legend=c("XGB", "NB", "SVM", "LogReg"), col=c("blue", "green", "red", "grey"), lwd=2)
+  output.plot[["roc"]] <- ggroc(rocs) +
+    geom_abline(slope=1, linetype = "dashed", color = "grey", intercept = 1) +
+      ggtitle(paste0("encoding: ", encoding)) + labs(color = "model") +
+        annotate(geom = "text", x = 0.25, y = seq(0.1, 0.4, length.out = length(rocs)),
+          label = paste("auc", names(rocs), ":", sapply(rocs, function(x) as.character(round(x$auc, 3)))))
 
-  importance_matrix <- xgb.importance(model = xgb)
-  importance_plot <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25)
+  # importance_matrix <- xgb.importance(model = models[["xgb"]])
+  # output.plot[["importance"]] <- xgb.ggplot.importance(importance_matrix = importance_matrix, top_n = 25, measure = "Gain")
 
-  return(list(roc_plot, importance_plot))
+  return(output.plot)
 }

@@ -4,16 +4,24 @@
 \alias{classify_data}
 \title{Classifies the repertoire sequencing data binarily (binding / not binding). This can be done both at the clonotype level or at the single cell level.}
 \usage{
-classify_data(features, to.use, unique.sequences, encoding)
+classify_data(
+  features,
+  unique.sequences = "cdr3s_aa",
+  encoding = "onehot",
+  to.use = c("cdr3s_aa", "cdr3s_nt", "aa_sequence_HC", "aa_sequence_LC"),
+  cv = 5
+)
 }
 \arguments{
 \item{features}{List of dataframes containing the extracted features. This is the output of load_data function.}
 
-\item{to.use}{Character vector indicating which features to use. If not supplied all the features will be used}
-
 \item{unique.sequences}{Names of the sequences to be kept. Default is c("aa_sequence_HC", "aa_sequence_LC") which keeps every cell with a unique combination of heavy and light chain sequences. Other options include "clonotype_id", "cdr3s_aa", "aa_sequence_HC".}
 
 \item{encoding}{Character indicating which encoding strategy to use. Options are "onehot", "kmer", "protr". To set the kmer size set encoding = "5mer" for size 5. If only "kmer" is given the default size is 3. The default overall is set to "onehot".}
+
+\item{to.use}{Character vector indicating which features to use. If not supplied all the features will be used}
+
+\item{cv}{Numeric indicating the number of folds used in cross validation. Default is 5.}
 }
 \value{
 This function plots AUC scores for each model, feature importance for XGBoost and return the predicted labels (Binding / not Binding)

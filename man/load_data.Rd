@@ -6,12 +6,12 @@
 \usage{
 load_data(
   VDJ.directory,
-  clonotype.level,
-  filter.prod,
-  filter.confidence,
-  filter.is.cell,
-  red.method,
-  n.dims
+  clonotype.level = FALSE,
+  filter.prod = TRUE,
+  filter.confidence = TRUE,
+  filter.is.cell = TRUE,
+  red.method = "pca",
+  n.dims = 1:10
 )
 }
 \arguments{

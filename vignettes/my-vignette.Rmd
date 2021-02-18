@@ -9,7 +9,7 @@ vignette: >
   %\VignetteEncoding{UTF-8}
 ---
 
-Bindpred is a package designed to create an environment for the analysis of single-cell immune repertoire sequencing experiments. The package is designed to primarily analyze the output from 10x genomics cellranger (output from count for GEX and vdj for enriched immune receptor libraries). The functions could work with other barcode-based scSeq technologies assume the input columns are added correctly.
+Bindpred is a package designed to create an environment for the analysis of single-cell immune repertoire sequencing experiments. The package is designed to primarily analyze the output from 10x Genomics cellranger (output from count for GEX and vdj for enriched immune receptor libraries). The functions could work with other barcode-based scSeq technologies assume the input columns are added correctly.
 
 Loading the package.
 
@@ -24,7 +24,7 @@ Directories must be a character vector containing one mouse each, if correspondi
 The output will be a list of dataframes with corresponding to the provided directories.
 
 ```{r}
-directories <- list.dirs("../../Immunizations", recursive = F)[2:6]
+directories <- list.dirs("../../Immunizations", recursive = F)[2:3]
 ```
 
 Features can be created at the cell or clonotype level. Other options include filtering criteria. It is possible to filter by productive cells, high confidence reads and if the reads are confirmed to come from a cell. If gene expression data
@@ -47,54 +47,42 @@ label_data <- function(features, labels, share.specific, share.affinity) {
     mouse_number <- map(features, ~unique(.$sample))
     labels <- read.csv(labels) %>% filter(mouse %in% mouse_number)
 
-    if (share.specific == TRUE) 
-      features <- map_if(features, ~!"ELISA_bind" %in% colnames(.), 
-                         ~left_join(., select(labels, ELISA_bind, clonotype_id), by = "clonotype_id"))
-    else 
-      features <- map_if(features, ~!"ELISA_bind" %in% colnames(.), 
-                         ~left_join(., select(labels, ELISA_bind, cdr3s_aa), by = "cdr3s_aa", suffix = c("","")))
-
-    if (share.affinity == TRUE) 
-      features <- map_if(features, ~!"octet" %in% colnames(.), 
-                         ~left_join(., select(labels, octet, clonotype_id), by = "clonotype_id"))
-    else 
-      features <- map_if(features, ~!"octet" %in% colnames(.),
-                         ~left_join(., select(labels, octet, cdr3s_aa), by = "cdr3s_aa", suffix = c("","")))
+    if (!"ELISA_bind" %in% colnames(bind_rows(features))) {
+      if (share.specific == TRUE) 
+        features <- map(features, ~left_join(., dplyr::select(labels, ELISA_bind, clonotype_id), by = "clonotype_id"))
+      else 
+        features <- map(features, ~left_join(., dplyr::select(labels, ELISA_bind, cdr3s_aa), by = "cdr3s_aa", suffix = c("","")))
+    }
+    if (!"octet" %in% colnames(bind_rows(features))) {
+      if (share.affinity == TRUE) 
+        features <- map(features, ~left_join(., dplyr::select(labels, octet, clonotype_id), by = "clonotype_id"))
+      else 
+        features <- map(features, ~left_join(., dplyr::select(labels, octet, cdr3s_aa), by = "cdr3s_aa", suffix = c("","")))
+    }
     return(features)
 }
 features_cell <- label_data(features_cell, labels)
 features_clone <- label_data(features_clone, labels)
 ```
 
-To explore the features we use the explore_features function. This function plots comparisons of different measures (CDR3 length, mutation count) between binding and non binding. If aggregated plots are desired it's possbile to set  per.sample = TRUE. If clonotype level features are provided then the clonotype rank is plotted and colored based on binding.
-
+To explore the features we use the explore_features function. This function plots comparisons of different measures (CDR3 length, mutation count) between binding and non binding. If aggregated plots are desired it's possible to set  per.sample = TRUE. If clonotype level features are provided then the clonotype rank is plotted and colored based on binding.
 
 ```{r}
-library(grid)
-library(gridExtra)
-explore_features(features_clone, per.sample = T)
-plots <- explore_features(features_cell, per.sample = F)
-
-grid.arrange(arrangeGrob(grobs=plots[1:2], nrow = 2))
-grid.arrange(arrangeGrob(grobs=plots[3:5]))
-grid.arrange(arrangeGrob(grobs=plots[6]))
-grid.arrange(arrangeGrob(grobs=plots[7:9], layout_matrix = rbind(c(3,1), c(3,2))))
-grid.arrange(arrangeGrob(grobs=plots[10:13]))
+explore_features(features_cell, per.sample = T, combined = T)
 ```
 
 The function classify_data uses 4 machine learning models to predict binding of the each cell/clonotype. The models are XGBoost, SVM, naive bayes and logistic regression.
-Encoding options inclued "kmer", "onehot", "protr" (physical properties) and "protr.cdr3". The unique.sequences parameter controls how sequences are filtered prior to training. 
+Encoding options inclued "kmer", "onehot", "tc.cdr", "dc" (dipeptide/tripeptide components) and "blosum". The unique.sequences parameter controls how sequences are filtered prior to training. 
 This function plots ROC curves for the 4 models and the feature importance as calculated by XGBoost. This can be helpful to quickly find out mutations have an impact on binding and the affinity of the BCR.
-
 
 ```{r, include=TRUE}
 AUC <- list()
 
-for (enc in c("onehot", "protr", "protr.cdr3", "kmer")) {
-    AUC[[enc]] <- classify_data(features_cell, encoding = enc, unique.sequences = c("aa_sequence_HC", "aa_sequence_LC"))[["roc"]]
+for (enc in c("2mer", "3mer", "4mer", "5mer", "6mer", "onehot", "blosum")) {
+    AUC[[enc]] <- classify_data(features_cell, encoding = enc, unique.sequences = "cdr3s_aa", cv = 10)[["roc"]]
 }
 
-grid.arrange(arrangeGrob(grobs=AUC))
+AUC
 ```
 
 In the same way we can compare different encodings and models for affinity prediction.
@@ -102,12 +90,11 @@ In the same way we can compare different encodings and models for affinity predi
 ```{r}
 reg <- list()
 
-for (enc in c("onehot", "protr", "protr.cdr3", "kmer")) {
-    reg[[enc]] <- predict_affinity(features_cell, encoding = enc, unique.sequences = c("aa_sequence_HC", "aa_sequence_LC"))[["reg"]]
+for (enc in c("tc.cdr3", "blosum", "3mer", "onehot")) {
+    reg[[enc]] <- predict_affinity(features_cell, encoding = enc)[["reg"]]
 }
 
-grid.arrange(arrangeGrob(grobs=reg))
-
+reg
 ```
 
 In order to make the cell labeling more intuitive and easier to use it is advised to use the App.R function that launches an interactive web app that allows to add labels to the obtained sequences.

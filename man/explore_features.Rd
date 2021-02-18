@@ -4,12 +4,14 @@
 \alias{explore_features}
 \title{Plots repertoire features for binding versus non binding cells. This can be done both at the clonotype level or at the single cell level.}
 \usage{
-explore_features(features, per.sample)
+explore_features(features, per.sample = T, combined = T)
 }
 \arguments{
 \item{features}{List of dataframes containing the extracted features. This is the output of load_data function.}
 
 \item{per.sample}{Logical indicating if the plots produced are separated by sample or aggregated.}
+
+\item{combined}{Logical indicating if the plots produced are combined in a single publication ready plot.}
 }
 \value{
 This function plots the mean mutation for each cell (divided in Heavy chain and Light chain mutations), gene usage, CDR3 length, and the ratio between coding versus non-coding mutations.
@@ -19,7 +21,7 @@ Plots repertoire features for binding versus non binding cells. This can be done
 }
 \examples{
 \dontrun{
-check_explore_features <- explore_features(features = output.load_data)
+check_explore_features <- explore_features(features = output.load_data, per.sample = T, combined = T)
 }
 
 }
